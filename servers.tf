@@ -42,11 +42,24 @@ resource "aws_instance" "webheads" {
   Add-WindowsFeature Web-Mgmt-Tools
   Add-WindowsFeature NET-Framework-Features, NET-Framework-Core
 
+$hostname="platformselfsigned"
+$iisSite="Default Web Site"
+
+New-SelfSignedCertificate -certstorelocation cert:\localmachine\my -dnsname $hostname
+
+$cert = (Get-ChildItem cert:\LocalMachine\My | where-object { $_.Subject -like "*$hostname*" } | Select-Object -First 1).Thumbprint
+
+New-WebBinding -name $iisSite -Protocol https -Port 443
+
+cd IIS:\SslBindings
+get-item cert:\LocalMachine\MY\$cert | new-item 0.0.0.0!443
+
   $indexContent = '<!DOCTYPE html>
 <html>
 
 <head>
 <meta charset="utf-8">
+<meta name="google" value="notranslate">
 <title>Lorem Ipsum Dolor Sit Amet</title>
 <style>
 
@@ -75,6 +88,14 @@ svg {
 }
 
 </style>
+
+<script>
+if (location.protocol != "https:")
+{
+ location.href = "https:" + window.location.href.substring(window.location.protocol.length);
+}
+</script>
+
 </head>
 
 <body>
@@ -100,6 +121,10 @@ svg {
 </html>'
 
 $indexContent | Set-Content 'c:\inetpub\wwwroot\index.html'
+
+$serverContent = 'You are on server ${count.index + 1}'
+$serverContent | Set-Content 'c:\inetpub\wwwroot\server.txt'
+
 
   </powershell>
   EOF
@@ -139,13 +164,12 @@ resource "aws_elb" "load_balancer" {
     lb_protocol       = "http"
   }
 
-  // The following code should be changed to use port 443 once self-signed certs are installed on the instance
   listener {
-    instance_port      = 80
-    instance_protocol  = "http"
+    instance_port      = 443
+    instance_protocol  = "https"
     lb_port            = 443
     lb_protocol        = "https"
-    ssl_certificate_id = "arn:aws:acm:us-west-2:973868890006:certificate/6274d9f6-475a-48ca-880b-ec0168403f61"
+    ssl_certificate_id = "arn:aws:acm:us-west-2:973868890006:certificate/8738c7c4-93b4-4823-8a7c-c858cca62603"
   }
 
   health_check {
@@ -169,4 +193,24 @@ resource "aws_elb" "load_balancer" {
     Role        = "PLA"
     Service     = "LB"
   }
+}
+
+resource "aws_load_balancer_policy" "lb_policy" {
+  load_balancer_name = "${aws_elb.load_balancer.name}"
+  policy_name        = "ssl-policy"
+  policy_type_name   = "SSLNegotiationPolicyType"
+
+  policy_attribute {
+    name  = "Reference-Security-Policy"
+    value = "ELBSecurityPolicy-TLS-1-2-2017-01"
+  }
+}
+
+resource "aws_load_balancer_listener_policy" "lb_listener_policy" {
+  load_balancer_name = "${aws_elb.load_balancer.name}"
+  load_balancer_port = 443
+
+  policy_names = [
+    "${aws_load_balancer_policy.lb_policy.policy_name}",
+  ]
 }
